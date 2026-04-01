@@ -1,0 +1,2 @@
+Paperless-AI smoke test document three.
+Tags: smoke, integration.

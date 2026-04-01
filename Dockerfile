@@ -30,7 +30,7 @@ RUN pip install --upgrade pip && pip install --no-cache-dir -r requirements.txt
 COPY package*.json ./
 
 # Install node dependencies with clean install
-RUN npm ci --only=production && npm cache clean --force
+RUN npm ci --omit=dev && npm cache clean --force
 
 # Copy application source code
 COPY . .
@@ -46,7 +46,7 @@ EXPOSE ${PAPERLESS_AI_PORT:-3000}
 
 # Add health check with dynamic port
 HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:${PAPERLESS_AI_PORT:-3000}/health || exit 1
+    CMD curl -f http://localhost:${PAPERLESS_AI_PORT:-3000}/health/live || exit 1
 
 # Set production environment
 ENV NODE_ENV=production

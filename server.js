@@ -2,16 +2,12 @@ const express = require('express');
 const cron = require('node-cron');
 const path = require('path');
 const fs = require('fs').promises;
+const axios = require('axios');
 const config = require('./config/config');
 const paperlessService = require('./services/paperlessService');
 const AIServiceFactory = require('./services/aiServiceFactory');
 const documentModel = require('./models/document');
-const setupService = require('./services/setupService');
 const setupRoutes = require('./routes/setup');
-
-// Add environment variables for RAG service if not already set
-process.env.RAG_SERVICE_URL = process.env.RAG_SERVICE_URL || 'http://localhost:8000';
-process.env.RAG_SERVICE_ENABLED = process.env.RAG_SERVICE_ENABLED || 'true';
 const cors = require('cors');
 const cookieParser = require('cookie-parser');
 const Logger = require('./services/loggerService');
@@ -66,6 +62,68 @@ app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 app.use(express.static(path.join(__dirname, 'public')));
 app.use(cookieParser());
+
+function sendHealthLive(res) {
+  const v = config.validate();
+  if (!v.valid) {
+    return res.status(503).json({ status: 'error', errors: v.errors });
+  }
+  return res.json({ status: 'ok' });
+}
+
+app.get('/health/live', (req, res) => sendHealthLive(res));
+
+app.get('/health/ready', async (req, res) => {
+  const tagging = config.enableTagging ? 'enabled' : 'disabled';
+  const ragOn = config.ragServiceEnabled;
+  let paperless = 'error';
+  let rag = ragOn ? 'error' : 'disabled';
+
+  const structural = config.validate();
+  if (!structural.valid) {
+    return res.status(503).json({
+      status: 'error',
+      paperless,
+      rag,
+      tagging,
+      errors: structural.errors,
+    });
+  }
+
+  try {
+    const apiRoot = process.env.PAPERLESS_API_URL.replace(/\/api\/?$/, '');
+    const pr = await axios.get(`${apiRoot}/api/`, {
+      headers: { Authorization: `Token ${process.env.PAPERLESS_API_TOKEN}` },
+      timeout: 8000,
+      validateStatus: () => true,
+    });
+    paperless = pr.status === 200 ? 'ok' : 'error';
+  } catch {
+    paperless = 'error';
+  }
+
+  if (ragOn) {
+    try {
+      const ragUrl = process.env.RAG_SERVICE_URL || 'http://localhost:8000';
+      const rr = await axios.get(`${ragUrl.replace(/\/$/, '')}/status`, {
+        timeout: 5000,
+        validateStatus: () => true,
+      });
+      rag = rr.status === 200 ? 'ok' : 'error';
+    } catch {
+      rag = 'error';
+    }
+  }
+
+  const ok = paperless === 'ok' && rag !== 'error';
+  const body = {
+    status: ok ? 'ok' : 'error',
+    paperless,
+    rag,
+    tagging,
+  };
+  return res.status(ok ? 200 : 503).json(body);
+});
 
 // Swagger documentation route
 app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec, {
@@ -348,12 +406,7 @@ async function saveDocumentChanges(docId, updateData, analysis, originalData) {
 // Main scanning functions
 async function scanInitial() {
   try {
-    const isConfigured = await setupService.isConfigured();
-    if (!isConfigured) {
-      console.log('[ERROR] Setup not completed. Skipping document scan.');
-      return;
-    }
-
+    // Tagging enablement and structural config are checked in startScanning() before this runs.
     let [existingTags, documents, ownUserId, existingCorrespondentList, existingDocumentTypes] = await Promise.all([
       paperlessService.getTags(),
       paperlessService.getAllDocuments(),
@@ -388,6 +441,14 @@ async function scanInitial() {
 async function scanDocuments() {
   if (runningTask) {
     console.log('[DEBUG] Task already running');
+    return;
+  }
+
+  if (!config.enableTagging) {
+    return;
+  }
+  const structural = config.validate();
+  if (!structural.valid) {
     return;
   }
 
@@ -436,7 +497,7 @@ const authRoutes = require('./routes/auth');
 const ragRoutes = require('./routes/rag');
 
 // Mount RAG routes if enabled
-if (process.env.RAG_SERVICE_ENABLED === 'true') {
+if (config.ragServiceEnabled) {
   app.use('/api/rag', ragRoutes);
   
   // RAG UI route
@@ -486,100 +547,52 @@ app.get('/', async (req, res) => {
   }
 });
 
-/**
- * @swagger
- * /health:
- *   get:
- *     summary: System health check endpoint
- *     description: |
- *       Checks if the application is properly configured and the database is reachable.
- *       This endpoint can be used by monitoring systems to verify service health.
- *       
- *       The endpoint returns a 200 status code with a "healthy" status if everything is 
- *       working correctly, or a 503 status code with error details if there are issues.
- *     tags: [System]
- *     responses:
- *       200:
- *         description: System is healthy and operational
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 status:
- *                   type: string
- *                   example: "healthy"
- *                   description: Health status indication
- *       503:
- *         description: System is not fully configured or database is unreachable
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 status:
- *                   type: string
- *                   enum: [not_configured, error]
- *                   example: "not_configured"
- *                   description: Error status type
- *                 message:
- *                   type: string
- *                   example: "Application setup not completed"
- *                   description: Detailed error message
- */
-app.get('/health', async (req, res) => {
-  try {
-    const isConfigured = await setupService.isConfigured();
-    if (!isConfigured) {
-      return res.status(503).json({ 
-        status: 'not_configured',
-        message: 'Application setup not completed'
-      });
-    }
-
-    await documentModel.isDocumentProcessed(1);
-    res.json({ status: 'healthy' });
-  } catch (error) {
-    console.error('Health check failed:', error);
-    res.status(503).json({ 
-      status: 'error', 
-      message: error.message 
-    });
-  }
-});
-
 // Error handler
 app.use((err, req, res, next) => {
   console.error(err.stack);
   res.status(500).send('Something broke!');
 });
 
-// Start scanning
+// Start scanning / subsystems
 async function startScanning() {
-  try {
-    const isConfigured = await setupService.isConfigured();
-    if (!isConfigured) {
-      console.log(`Setup not completed. Visit http://your-machine-ip:${process.env.PAPERLESS_AI_PORT || 3000}/setup to complete setup.`);
-    }
+  const structural = config.validate();
+  if (!structural.valid) {
+    console.error('[CONFIG] Invalid configuration (structural):', structural.errors.join('; '));
+  }
 
-    const userId = await paperlessService.getOwnUserID();
-    if (!userId) {
-      console.error('Failed to get own user ID. Abort scanning.');
-      return;
-    }
+  if (config.enableTagging && structural.valid) {
+    try {
+      const userId = await paperlessService.getOwnUserID();
+      if (!userId) {
+        console.error('Failed to get own user ID. Abort tagging pipeline.');
+        return;
+      }
 
-    console.log('Configured scan interval:', config.scanInterval);
-    console.log(`Starting initial scan at ${new Date().toISOString()}`);
-    if(config.disableAutomaticProcessing != 'yes') {
+      console.log(`Tagging pipeline enabled; scan interval: ${config.scanInterval}`);
+      console.log(`Starting initial scan at ${new Date().toISOString()}`);
       await scanInitial();
-  
+
       cron.schedule(config.scanInterval, async () => {
         console.log(`Starting scheduled scan at ${new Date().toISOString()}`);
         await scanDocuments();
       });
+    } catch (error) {
+      console.error('[ERROR] in startScanning (tagging):', error);
     }
-  } catch (error) {
-    console.error('[ERROR] in startScanning:', error);
+  } else if (!config.enableTagging) {
+    console.log('Tagging pipeline disabled (ENABLE_TAGGING=false).');
+  } else {
+    console.log('Tagging pipeline not started: fix configuration errors shown above.');
+  }
+
+  if (config.ragServiceEnabled) {
+    console.log(
+      `RAG integration enabled at ${process.env.RAG_SERVICE_URL || 'http://localhost:8000'}`,
+    );
+  }
+
+  if (!config.enableTagging && !config.ragServiceEnabled) {
+    console.log('Running with tagging and RAG disabled (MCP / API read-only style operation).');
   }
 }
 

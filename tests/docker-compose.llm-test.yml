@@ -1,0 +1,5 @@
+# Placeholder for future LLM integration tests (see plan PR 11).
+# This file intentionally defines no services yet. When added, use a real model API key
+# and optional sidecar services; keep tests/docker-compose.test.yml free of LLM dependencies.
+
+services: {}

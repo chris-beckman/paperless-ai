@@ -9,9 +9,12 @@ const ragService = require('../services/ragService');
 router.post('/search', async (req, res) => {
   try {
     const { query, from_date, to_date, correspondent } = req.body;
-    
-    if (!query) {
+
+    if (query === undefined || query === null) {
       return res.status(400).json({ error: 'Query is required' });
+    }
+    if (typeof query === 'string' && query.trim() === '') {
+      return res.json([]);
     }
     
     const filters = {};

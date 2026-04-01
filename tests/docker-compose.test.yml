@@ -1,0 +1,92 @@
+# Automated (same layout as ../nightwatch/tests: compose + setup script; root entry like ../cb-edge/calendar):
+#   ./run-integration-tests.sh        # or: npm run test:integration  (always docker compose down -v after)
+#   ./run-integration-tests.sh --keep-up   # leave stack up for debugging
+#   ./stop-integration-tests.sh       # or: npm run test:integration:down  (manual cleanup if you used --keep-up)
+#
+# Manual:
+#   cd tests
+#   cp .env.test.example .env.test
+#   docker compose -f docker-compose.test.yml up -d broker paperless-ngx
+#   ./seed-paperless.sh                              # writes PAPERLESS_API_TOKEN into .env.test
+#   docker compose -f docker-compose.test.yml up -d --build --force-recreate paperless-ai
+#   docker compose -f docker-compose.test.yml ps   # wait for healthy
+#   npm test                                         # from repo root (loads tests/.env.test)
+#   docker compose -f docker-compose.test.yml down -v
+#
+# paperless-ai loads .env.test for PAPERLESS_API_TOKEN; recreate the container after seeding so env is applied.
+
+services:
+  broker:
+    image: docker.io/library/redis:8
+    restart: unless-stopped
+    volumes:
+      - test_redis:/data
+
+  paperless-ngx:
+    image: ghcr.io/paperless-ngx/paperless-ngx:latest
+    restart: unless-stopped
+    depends_on:
+      broker:
+        condition: service_started
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - test_paperless_data:/usr/src/paperless/data
+      - test_paperless_media:/usr/src/paperless/media
+      - test_paperless_export:/usr/src/paperless/export
+      - test_paperless_consume:/usr/src/paperless/consume
+    environment:
+      PAPERLESS_REDIS: redis://broker:6379
+      PAPERLESS_SECRET_KEY: test-secret-key
+      PAPERLESS_ADMIN_USER: admin
+      PAPERLESS_ADMIN_PASSWORD: admin
+      PAPERLESS_URL: http://127.0.0.1:8000
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "curl -fsS http://localhost:8000/api/ >/dev/null || exit 1",
+        ]
+      interval: 10s
+      timeout: 10s
+      retries: 18
+      start_period: 120s
+
+  paperless-ai:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      paperless-ngx:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:3000:3000"
+    env_file:
+      - .env.test
+    environment:
+      PAPERLESS_AI_PORT: "3000"
+      PAPERLESS_API_URL: http://paperless-ngx:8000/api
+      PAPERLESS_USERNAME: admin
+      ENABLE_TAGGING: "false"
+      RAG_SERVICE_ENABLED: "true"
+      RAG_SERVICE_URL: http://localhost:8000
+      API_KEY: test-smoke-api-key
+      JWT_SECRET: test-smoke-jwt-secret
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "curl -fsS http://localhost:3000/health/live >/dev/null || exit 1",
+        ]
+      interval: 15s
+      timeout: 10s
+      retries: 6
+      start_period: 45s
+
+volumes:
+  test_redis:
+  test_paperless_data:
+  test_paperless_media:
+  test_paperless_export:
+  test_paperless_consume:

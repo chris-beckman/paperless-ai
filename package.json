@@ -4,7 +4,11 @@
   "description": "AI based Tag, correspondent and meta data generation",
   "main": "server.js",
   "scripts": {
-    "test": "nodemon server.js"
+    "test": "vitest run",
+    "test:integration": "bash run-integration-tests.sh",
+    "test:integration:down": "bash stop-integration-tests.sh",
+    "test:watch": "vitest",
+    "start:dev": "nodemon server.js"
   },
   "keywords": [
     "paperless-ngx",
@@ -28,6 +32,9 @@
   },
   "author": "Clusterzx",
   "license": "MIT",
+  "overrides": {
+    "yaml": "2.8.3"
+  },
   "dependencies": {
     "axios": "^1.8.2",
     "bcryptjs": "^3.0.2",
@@ -57,12 +64,16 @@
     "eslint-config-prettier": "^10.1.1",
     "eslint-plugin-jsdoc": "^50.6.3",
     "globals": "^16.0.0",
-    "prettier": "^3.5.3"
+    "prettier": "^3.5.3",
+    "vitest": "^3.2.4"
   },
   "pnpm": {
     "onlyBuiltDependencies": [
       "@scarf/scarf",
       "better-sqlite3"
-    ]
+    ],
+    "overrides": {
+      "yaml": "2.8.3"
+    }
   }
 }
